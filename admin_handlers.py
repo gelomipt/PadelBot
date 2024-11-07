@@ -1,3 +1,16 @@
+print("admin_handlers.py is being imported and executed")
+
+import datetime
+import logging
+import re
+import mysql.connector
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -8,43 +21,71 @@ from telegram.ext import (
     filters,
 )
 from menu_handlers import show_admin_menu
+from database import connect_db, get_player_by_nickname, update_game_attribute
+from config import ADMIN_USERNAMES, DEDICATED_CHAT_ID
+from enum import IntEnum
+from utils import get_game_data, send_game_status_update
 
-import datetime
-import logging
+from constants import States
 
-from database import connect_db, get_player_by_nickname
-from config import ADMIN_USERNAMES
+logger.info(f"In admin_handlers.py, SELECT_GAME id: {id(States.SELECT_GAME)}")
+
+ADD_GAME_DATE = 1
+ADD_GAME_START_TIME = 2
+ADD_GAME_END_TIME = 3
+ADD_GAME_VENUE = 4
+ADD_GAME_CAPACITY = 5
 
 # Conversation states
-ADD_GAME_DATE, ADD_GAME_START_TIME, ADD_GAME_END_TIME, ADD_GAME_VENUE, ADD_GAME_CAPACITY = range(5)
-SELECT_GAME_TO_EDIT, SELECT_ATTRIBUTE_TO_EDIT, EDIT_GAME_ATTRIBUTE_VALUE = range(3)
-
+#ADD_GAME_DATE, ADD_GAME_START_TIME, ADD_GAME_END_TIME, ADD_GAME_VENUE, ADD_GAME_CAPACITY = range(5)
+#SELECT_GAME, GAME_ACTIONS, SELECT_ATTRIBUTE_TO_EDIT, EDIT_GAME_ATTRIBUTE_VALUE, REGISTER_PLAYER, REMOVE_PLAYER = range(6)
 
 async def add_new_game_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#    user = update.effective_user.username
+#    if user not in ADMIN_USERNAMES:
+#        await update.message.reply_text("You do not have permission to add games.")
+#        return ConversationHandler.END
+#    query = update.callback_query
+#    await query.answer()  # Acknowledge the callback
+    logger.info(f"add_new_game_start function called")
     user = update.effective_user.username
+
     if user not in ADMIN_USERNAMES:
         await update.message.reply_text("You do not have permission to add games.")
         return ConversationHandler.END
-
+        
     await update.message.reply_text("Please enter the date of the game (YYYY-MM-DD):")
     return ADD_GAME_DATE
 
 async def add_game_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    date_text = update.message.text
     try:
+        date_text = update.message.text
+        logger.info(f"add_game_date function called")
+   
         datetime.datetime.strptime(date_text, '%Y-%m-%d')
+        context.user_data['event_date'] = date_text
+
+        await update.message.reply_text("Please enter the start time of the game (HH:MM in 24-hour format):")
+        return ADD_GAME_START_TIME
+        
     except ValueError:
         await update.message.reply_text("Invalid date format. Please enter the date in YYYY-MM-DD format:")
         return ADD_GAME_DATE
-
+        
+    except Exception as e:
+        logger.exception("An error occurred in add_game_date.")
+        await update.message.reply_text("An unexpected error occurred. Please try again later.")
+        return ConversationHandler.END
+        
     context.user_data['event_date'] = date_text
-    await update.message.reply_text("Please enter the start time of the game (HH:MM in 24-hour format):")
-    return ADD_GAME_START_TIME
 
 async def add_game_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_time_text = update.message.text
+    logger.info(f"add_game_start_time function called")
+
     try:
         datetime.datetime.strptime(start_time_text, '%H:%M')
+        context.user_data['start_time'] = start_time_text
     except ValueError:
         await update.message.reply_text("Invalid time format. Please enter the start time in HH:MM format:")
         return ADD_GAME_START_TIME
@@ -57,6 +98,7 @@ async def add_game_end_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     end_time_text = update.message.text
     try:
         datetime.datetime.strptime(end_time_text, '%H:%M')
+        context.user_data['end_time'] = end_time_text
     except ValueError:
         await update.message.reply_text("Invalid time format. Please enter the end time in HH:MM format:")
         return ADD_GAME_END_TIME
@@ -114,7 +156,7 @@ async def add_game_capacity(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_game_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Game addition has been canceled.")
     context.user_data.clear()
-    return ConversationHandler.END
+    return await show_admin_menu(update, context)
 
 #Remove game function
 async def remove_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -125,7 +167,12 @@ async def remove_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = connect_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, event_date, start_time, venue FROM schedule WHERE finished IS NULL")
+    cursor.execute("""
+        SELECT id, event_date, start_time, venue 
+        FROM schedule 
+        WHERE finished IS NULL
+        ORDER BY event_date ASC            
+        """)
     games = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -199,7 +246,6 @@ async def handle_remove_game_callback(update: Update, context: ContextTypes.DEFA
 
     await query.edit_message_text(message, reply_markup=reply_markup)
 
-
 #Handle Confirmation Response
 async def handle_remove_confirmation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -232,11 +278,14 @@ async def handle_remove_confirmation_callback(update: Update, context: ContextTy
 
         # Clear the remove game ID from context
         context.user_data.pop('remove_game_id', None)
+        context.user_data.clear()
+        return await show_admin_menu(update, context)
     else:
         await query.edit_message_text("Game removal canceled.")
         # Clear the remove game ID from context
         context.user_data.pop('remove_game_id', None)
-
+        context.user_data.clear()
+        return await show_admin_menu(update, context)
 
 #Add Player Handler
 async def add_player_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -294,7 +343,6 @@ async def handle_add_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("An error occurred. Please try again.")
         context.user_data.clear()
-
 
 #Edit Player Handler
 async def edit_player_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -429,7 +477,6 @@ async def handle_new_player_attribute_value(update: Update, context: ContextType
     context.user_data.pop('edit_player_attribute', None)
     context.user_data.pop('edit_player_step', None)
 
-
 #Remove Player Handler
 async def remove_player_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user.username
@@ -538,33 +585,14 @@ async def handle_remove_player_confirmation_callback(update: Update, context: Co
         # Clear the remove player ID from context
         context.user_data.pop('remove_player_id', None)
 
-
-#handle_edit_game_callback function
-async def handle_edit_game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    user = query.from_user.username
-    if user not in ADMIN_USERNAMES:
-        await query.edit_message_text("You do not have permission to edit games.")
-        return
-
-    game_id = int(query.data.split('_')[-1])
-    context.user_data['edit_game_id'] = game_id
-
-    keyboard = [
-        [InlineKeyboardButton("Event Date", callback_data='edit_attr_event_date')],
-        [InlineKeyboardButton("Start Time", callback_data='edit_attr_start_time')],
-        [InlineKeyboardButton("End Time", callback_data='edit_attr_end_time')],
-        [InlineKeyboardButton("Venue", callback_data='edit_attr_venue')],
-        [InlineKeyboardButton("Capacity", callback_data='edit_attr_capacity')],
-        [InlineKeyboardButton("Cancel", callback_data='edit_attr_cancel')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("Select an attribute to edit:", reply_markup=reply_markup)
-
 #edit_existing_game function
 async def edit_existing_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("edit_existing_game called")
+    user = update.message.from_user.username
+    if user not in ADMIN_USERNAMES:
+        await update.message.reply_text("You do not have permission to edit games.")
+        return ConversationHandler.END  # End the conversation
+        
     try:
         conn = connect_db()
         cursor = conn.cursor(dictionary=True)
@@ -575,15 +603,19 @@ async def edit_existing_game(update: Update, context: ContextTypes.DEFAULT_TYPE)
                    TIME_FORMAT(end_time, '%H:%i') AS end_time_str, 
                    venue 
             FROM schedule 
-            ORDER BY event_date DESC
+            WHERE (event_date > CURDATE()) 
+               OR (event_date = CURDATE() AND start_time > CURTIME())
+            ORDER BY event_date ASC, start_time ASC
         """)
         games = cursor.fetchall()
+        
         if not games:
             await update.message.reply_text("No games available to edit.")
             return ConversationHandler.END
 
         keyboard = []
         for game in games:
+            game_id = game['id']
             event_date = game['event_date_str']
             start_time = game['start_time_str']
             end_time = game['end_time_str']
@@ -592,10 +624,14 @@ async def edit_existing_game(update: Update, context: ContextTypes.DEFAULT_TYPE)
             button_text = f"{event_date} {start_time} - {end_time} - {venue}"
             callback_data = f"edit_game_{game['id']}"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+        
+        keyboard.append([InlineKeyboardButton('cancel', callback_data='cancel')])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("Select a game to edit:", reply_markup=reply_markup)
-        return SELECT_GAME_TO_EDIT  # Proceed to the next state
+        await update.message.reply_text("Какую игру изменить?", reply_markup=reply_markup)
+        logger.info(f"Selected game {game_id}. Return state {States.SELECT_GAME_TO_EDIT}")
+
+        return States.SELECT_GAME_TO_EDIT  # Proceed to the next state
 
     except Exception as e:
         logger.exception("Error fetching games")
@@ -606,6 +642,282 @@ async def edit_existing_game(update: Update, context: ContextTypes.DEFAULT_TYPE)
         cursor.close()
         conn.close()
     
+#handle_edit_game_callback function
+async def handle_edit_game_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("handle_edit_game_callback called")
+    
+    # Ensure callback_query is available
+    if not update.callback_query:
+        await update.message.reply_text("An error occurred No update.callback_query. Please try again.")
+        return States.SELECT_GAME
+
+    query = update.callback_query
+    await query.answer()
+
+    user=update.message.from_user.username
+    if not user or user not in ADMIN_USERNAMES:
+        if update.callback_query:
+            await update.callback_query.edit_message_text("You do not have permission to edit games.")
+        else:
+            await update.message.reply_text("You do not have permission to edit games.")
+        return ConversationHandler.END
+
+    # Fetch current game data   
+#    game_id = context.user_data.get('selected_game_id') 
+    game_id = int(query.data.split('_')[-1])
+    if not game_id:
+        await update.message.reply_text("No game selected. Please select a game first.")
+        return States.GAME_ACTIONS    
+    context.user_data['edit_game_id'] = game_id
+        
+    game = await get_game_data(game_id)
+    if not game:
+        await update.message.reply_text("Game not found.")
+        return States.SELECT_GAME_TO_EDIT
+        
+    # Select the attribute to edit, and store that as well
+#    attribute = query.data[len('edit_attr_'):]  
+#    context.user_data['edit_attribute'] = attribute
+
+    logger.info(f"User context after selecting attribute in handle_edit_game_callback: {context.user_data}")
+
+        
+    keyboard = [
+        [InlineKeyboardButton(f"Event Date: {game['event_date_str']}", callback_data='edit_attr_event_date')],
+        [InlineKeyboardButton(f"Start Time: {game['start_time_str']}", callback_data='edit_attr_start_time')],
+        [InlineKeyboardButton(f"End Time: {game['end_time_str']}", callback_data='edit_attr_end_time')],
+        [InlineKeyboardButton(f"Venue: {game['venue']}", callback_data='edit_attr_venue')],
+        [InlineKeyboardButton(f"Capacity: {game['capacity']}", callback_data='edit_attr_capacity')],
+        [InlineKeyboardButton("Finish", callback_data='edit_attr_finish')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Select an attribute to edit:", reply_markup=reply_markup)
+    
+    logger.info(f"Selected game {game_id} and attribute {reply_markup}. Return state {States.SELECT_ATTRIBUTE_TO_EDIT}")
+    return States.SELECT_ATTRIBUTE_TO_EDIT # Return the next state
+
+#Handle Attribute Selection            
+async def handle_edit_attribute_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("handle_edit_attribute_callback called")
+    
+    # Handle both callback query and message updates
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        attribute = query.data[len('edit_attr_'):]
+        message = query.message
+    else:
+        attribute = context.user_data.get('edit_attribute')
+        message = update.message
+        if not attribute:
+            await update.message.reply_text("No attribute selected. Please try again.")
+            return States.SELECT_GAME
+    logger.info(f"Attribute extracted: {attribute}")
+    context.user_data['edit_attribute'] = attribute
+
+    if attribute == 'finish':
+        # Fetch the game_id from user_data
+        game_id = context.user_data.get('edit_game_id')
+        if not game_id:
+            await query.edit_message_text("No game selected. Please select a game first.")
+            return States.GAME_ACTIONS  # Return to GAME_ACTIONS state
+
+        # Fetch updated game data
+        game = await get_game_data(game_id)
+        if not game:
+            await query.edit_message_text("Game not found.")
+            return States.GAME_ACTIONS  # Return to GAME_ACTIONS state
+        try:
+            conn = connect_db()
+            cursor = conn.cursor(dictionary=True)  # Use dictionary=True for easier access
+
+            # Fetch registration summary
+            cursor.execute("""
+                SELECT COUNT(CASE WHEN waiting = FALSE THEN 1 END) AS main_count,
+                       COUNT(CASE WHEN waiting = TRUE THEN 1 END) AS waiting_count
+                FROM registrations
+                WHERE game_id = %s
+            """, (game_id,))
+            registration = cursor.fetchone()
+            main_count = registration['main_count']
+            waiting_count = registration['waiting_count']
+        finally:
+            cursor.close()
+            conn.close()
+        
+        # Format the updated game details
+        game_info = (
+            f"✅ **Updated Game Details:**\n"
+            f"**Event Date:** {game['event_date_str']}\n"
+            f"**Start Time:** {game['start_time_str']}\n"
+            f"**End Time:** {game['end_time_str']}\n"
+            f"**Venue:** {game['venue']}\n"
+            f"**Capacity:** {game['capacity']}\n"
+            f"👤 **Registered**: {main_count} ({waiting_count} in waiting list)"
+
+        )
+        await context.bot.send_message(chat_id=DEDICATED_CHAT_ID, text=game_info, parse_mode='Markdown')
+        
+        if update.callback_query:
+            await manage_games_menu(update.callback_query, context)
+        elif update.message:
+            await manage_games_menu(update.message, context)
+
+        # Clear user_data
+        context.user_data.pop('edit_attribute', None)
+#        context.user_data.pop('edit_game_id', None)
+        
+        # Edit the current message to notify the user and remove the inline keyboard
+        await query.edit_message_text("Editing finished. Returning to the game selection menu.")
+
+        # Return to "Edit Existing Games" menu
+        await manage_games_menu(update, context)
+        logger.info(f"Returning to state: {States.SELECT_GAME}")
+        return States.SELECT_GAME  # Transition back to SELECT_GAME state
+
+    attribute_prompts = {
+        'event_date': "Enter the new event date (YYYY-MM-DD):",
+        'start_time': "Enter the new start time (HH:MM):",
+        'end_time': "Enter the new end time (HH:MM):",
+        'venue': "Enter the new venue:",
+        'capacity': "Enter the new capacity:"
+    }
+
+    prompt = attribute_prompts.get(attribute)
+    logger.info(f"Prompt found: {prompt}")
+    if not prompt:
+        await query.edit_message_text("Invalid attribute selected.")
+        return States.SELECT_ATTRIBUTE_TO_EDIT  # Stay in the current state      
+
+    await query.message.reply_text(prompt)
+    context.user_data['edit_step'] = 'update_attribute'
+    return States.EDIT_GAME_ATTRIBUTE_VALUE  # Return the next state
+
+async def handle_new_attribute_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("handle_new_attribute_value called")
+    new_value = update.message.text
+    game_id = context.user_data['edit_game_id']
+    attribute = context.user_data['edit_attribute']
+    user_input = update.message.text
+
+
+    if not attribute:
+        await update.message.reply_text("No attribute selected. Please start over.")
+        return States.GAME_ACTIONS
+#        return await show_admin_menu(update, context)
+        
+    if not game_id:
+        await update.message.reply_text("No game selected. Please start over.")
+        return States.GAME_ACTIONS
+#        return await show_admin_menu(update, context)
+        
+    try:
+        # Validate and update the attribute as needed
+        # Example: Update the database with the new value
+        update_successful = await update_game_attribute(game_id, attribute, user_input)
+        if not update_successful:
+            await update.message.reply_text("Failed to update the attribute. Please try again.")
+            return States.EDIT_GAME_ATTRIBUTE_VALUE  # Stay in the same state
+
+        await update.message.reply_text(f"The {attribute.replace('_', ' ')} has been updated.")
+        
+        # Clear the attribute but keep the game ID to continue editing the same game
+        context.user_data.pop('edit_attribute', None)
+        
+        game = await get_game_data(game_id)
+        if not game:
+            await update.message.reply_text("Failed to retrieve game data.")
+            return States.GAME_ACTIONS
+        
+        keyboard = [
+            [InlineKeyboardButton(f"Event Date: {game['event_date_str']}", callback_data='edit_attr_event_date')],
+            [InlineKeyboardButton(f"Start Time: {game['start_time_str']}", callback_data='edit_attr_start_time')],
+            [InlineKeyboardButton(f"End Time: {game['end_time_str']}", callback_data='edit_attr_end_time')],
+            [InlineKeyboardButton(f"Venue: {game['venue']}", callback_data='edit_attr_venue')],
+            [InlineKeyboardButton(f"Capacity: {game['capacity']}", callback_data='edit_attr_capacity')],
+            [InlineKeyboardButton("Finish", callback_data='edit_attr_finish')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "Select another attribute to edit or finish editing:",
+            reply_markup=reply_markup
+        )
+
+    except Exception as e:
+        logger.exception("Error updating game")
+        await update.message.reply_text("An error occurred while updating the game.")
+    
+    return States.SELECT_ATTRIBUTE_TO_EDIT  # Return to attribute selection state
+
+async def edit_game_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("edit_game_cancel called")
+    
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        
+        # Fetch the updated game details
+        game_id = context.user_data.get('edit_game_id')
+        if not game_id:
+            await query.message.reply_text("No game selected. Please select a game first.")
+            return States.GAME_ACTIONS  # Or handle accordingly        
+        
+        # Fetch game data from the database
+        game = await get_game_data(game_id)
+        if not game:
+            await query.message.reply_text("Game not found.")
+            return States.GAME_ACTIONS  # Or handle accordingly
+
+        try:
+            conn = connect_db()
+            cursor = conn.cursor()
+            # Fetch registration summary
+            cursor.execute("""
+                SELECT COUNT(CASE WHEN waiting = FALSE THEN 1 END) AS main_count,
+                       COUNT(CASE WHEN waiting = TRUE THEN 1 END) AS waiting_count
+                FROM registrations
+                WHERE game_id = %s
+            """, (game_id,))
+            registration = cursor.fetchone()
+            main_count = registration['main_count']
+            waiting_count = registration['waiting_count']
+        finally:
+            cursor.close()
+            conn.close()
+
+        # Format and send the updated game details
+        game_info = (
+            f"📢 **Upcoming Game Update** 📢\n\n"
+            f"📍 **Venue**: {game['venue']}\n"
+            f"📅 **Date**: {game['event_date_str']}\n"
+            f"🕒 **Time**: {game['start_time_str']} - {game['end_time_str']}\n"
+            f"👥 **Capacity**: {game['capacity']} players\n"
+            f"👤 **Registered**: {main_count} ({waiting_count} in waiting list)"
+        )        
+        
+        
+#        await query.message.reply_text(game_info, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=DEDICATED_CHAT_ID, text=game_info, parse_mode='Markdown')
+        await send_game_status_update (game_id, context)
+        
+        # Clear context data
+#        context.user_data.clear()        
+        context.user_data.pop('edit_attribute', None)
+        
+        # Return to "Edit Existing Games" menu
+        await manage_games_menu(update, context)
+        logger.info(f"Returning to state: {States.SELECT_GAME}")
+        return States.SELECT_GAME  # Return to SELECT_GAME state
+    else:
+        await update.message.reply_text("Editing finished.")
+        
+        # Clear context data
+        context.user_data.clear()
+        
+        # Return to "Edit Existing Games" menu
+        await manage_games_menu(update, context)
+        logger.info(f"Returning to state: {States.SELECT_GAME}")
+        return States.SELECT_GAME  # Return to SELECT_GAME state        
 
 #Handle Game Creation Steps
 async def handle_game_creation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -642,70 +954,416 @@ async def handle_game_creation(update: Update, context: ContextTypes.DEFAULT_TYP
                               VALUES (%s, %s, %s, %s, %s)''',
                            (event_date, start_time, end_time, venue, capacity))
             conn.commit()
-            cursor.close()
-            conn.close()
-
             await update.message.reply_text("New game has been added successfully.")
-            context.user_data.clear()
         except ValueError:
             await update.message.reply_text("Invalid capacity. Please enter a number.")
+        finally:
+            cursor.close()
+            conn.close()
+    context.user_data.clear()
 
-#Handle Attribute Selection            
-async def handle_edit_attribute_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    attribute = query.data.split('_')[-1]
-    context.user_data['edit_attribute'] = attribute
-
-    if attribute == 'cancel':
-        await query.edit_message_text("Editing canceled.")
-        context.user_data.pop('edit_game_id', None)
-        context.user_data.pop('edit_attribute', None)
-        return
-
-    attribute_prompts = {
-        'event_date': "Enter the new event date (YYYY-MM-DD):",
-        'start_time': "Enter the new start time (HH:MM):",
-        'end_time': "Enter the new end time (HH:MM):",
-        'venue': "Enter the new venue:",
-        'capacity': "Enter the new capacity:"
-    }
-
-    prompt = attribute_prompts.get(attribute, "Invalid attribute.")
-    if prompt == "Invalid attribute.":
-        await query.edit_message_text("Invalid attribute selected.")
-        return
-
-    await query.edit_message_text(prompt)
-    context.user_data['edit_step'] = 'update_attribute'
-
-async def edit_game_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("edit_game_cancel function called")
-    await update.message.reply_text("Editing game canceled.")
-    return ConversationHandler.END
-
-async def handle_new_attribute_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    new_value = update.message.text
-    game_id = context.user_data['edit_game_id']
-    attribute = context.user_data['edit_attribute']
-
-    conn = connect_db()
-    cursor = conn.cursor(dictionary=True)
+async def cancel_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the selected game and notify players if registered."""
+    game_id = context.user_data['selected_game_id']
+    # Check for registered players
     try:
-        # Build the SQL query dynamically
-        sql = f"UPDATE schedule SET {attribute} = %s WHERE id = %s"
-        cursor.execute(sql, (new_value, game_id))
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM registrations WHERE game_id = %s", (game_id,))
+        registered_count = cursor.fetchone()[0]
+        
+        # Set game as canceled
+        cursor.execute("UPDATE schedule SET finished = TRUE WHERE id = %s", (game_id,))
+        # Fetch game details
+        cursor.execute("""
+        SELECT event_date, venue
+        FROM schedule
+        WHERE id = %s
+        """, (game_id,))
+        game = cursor.fetchone()
         conn.commit()
-        await update.message.reply_text("Game updated successfully.")
-    except Exception as e:
-        logger.exception("Error updating game")
-        await update.message.reply_text("An error occurred while updating the game.")
+    finally:
+        cursor.close()
+        conn.close()
+    
+    await update.message.reply_text("Game has been canceled.")
+    
+    # Notify chat if players were registered
+    if registered_count > 0:
+        # Send announcement in chat about game cancellation
+        await context.bot.send_message(
+            chat_id=DEDICATED_CHAT_ID,
+            text=f"The game scheduled on {game['event_date']} at {game['venue']} has been canceled.", parse_mode='Markdown'
+        )
+        
+    return States.GAME_ACTIONS
+
+async def register_player_for_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Register a player for the selected game."""
+    # Prompt admin to enter player's username for registration
+    await update.callback_query.edit_message_text("Please enter the player's username to register:")
+    context.user_data['registration_step'] = 'awaiting_username'
+
+async def remove_player_from_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove a player from the selected game."""
+    await update.callback_query.edit_message_text("Please enter the player's username to remove:")
+    context.user_data['removal_step'] = 'awaiting_username'
+
+async def manage_games_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Initial user context manage_games_menu: {context.user_data}")
+    # Clear context data
+#    context.user_data.clear()
+    context.user_data['current_action'] = 'manage_games'
+    context.user_data.pop('edit_attribute', None) 
+    context.user_data.pop('edit_game_id', None)
+    context.user_data.pop('selected_game_id', None)
+    logger.info(f"User context show_manage_games_menu after cleaning: {context.user_data}")
+    
+    # Clear previous game ID if it exists
+#    context.user_data.pop('edit_game_id', None)
+    logger.info("manage_games_menu function called")
+    try:
+        """Display all upcoming games for selection."""
+        conn = connect_db()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT id, event_date, start_time, venue, capacity
+            FROM schedule
+            WHERE finished IS NULL
+            ORDER BY event_date, start_time
+        """)
+        games = cursor.fetchall()
+    finally:    
+        cursor.close()
+        conn.close()
+
+    if not games:
+        if update.message:
+            await update.message.reply_text("No upcoming games available.")
+        elif update.callback_query:
+            await update.callback_query.message.reply_text("No upcoming games available.")
+        return ConversationHandler.END
+
+    keyboard = []
+    for game in games:
+        callback_data = f"game_for_edit_select_{game['id']}"
+        logger.info(f"Sending callback_data: {callback_data}")
+        button_text = f"{game['event_date']} {game['start_time']} at {game['venue']} for {game['capacity']}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+    
+    keyboard.append([InlineKeyboardButton('Go back', callback_data='go_back')])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.message:
+        await update.message.reply_text("Select a game to edit:", reply_markup=reply_markup)
+    elif update.callback_query:
+        await update.callback_query.edit_message_text("Select a game to edit:", reply_markup=reply_markup)
+        
+    logger.info(f"After preparing reply manage_games_menu, context: {context.user_data}")
+    logger.info(f"Transitioning to state: {States.SELECT_GAME}")
+    return States.SELECT_GAME
+    
+async def show_game_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Initial user context show_game_details: {context.user_data}")
+
+    """Show selected game details and options for actions."""
+    logger.info("show_game_details function called")
+    query = update.callback_query
+    
+    if query:
+        await query.answer()
+    else:
+        logger.error("No callback_query found in update.")
+        await update.message.reply_text("An error occurred while fetching game details.")
+        return States.SELECT_GAME  # Or an appropriate state
+    
+    game_id = int(query.data.split('_')[-1])
+    context.user_data['selected_game_id'] = game_id
+    
+    logger.info(f"User context show_game_details after update: {context.user_data}")
+    
+    logger.info(f"Callback data received: {query.data}")
+    logger.info(f"Parsed game_id: {game_id}")
+    
+    try:
+        conn = connect_db()
+        cursor = conn.cursor(dictionary=True)
+    
+        # Fetch game details
+        cursor.execute("""
+        SELECT event_date, start_time, end_time, venue, capacity, announced
+        FROM schedule
+        WHERE id = %s
+        """, (game_id,))
+        game = cursor.fetchone()
+        if not game:
+            await query.message.reply_text("Game not found.")
+            return States.SELECT_GAME
+
+        # Fetch registration details
+        cursor.execute("""
+            SELECT COUNT(CASE WHEN waiting = FALSE THEN 1 END) AS main_count,
+                   COUNT(CASE WHEN waiting = TRUE THEN 1 END) AS waiting_count
+            FROM registrations
+            WHERE game_id = %s
+        """, (game_id,))
+        registration = cursor.fetchone()
+        main_count = registration['main_count']
+        waiting_count = registration['waiting_count']
     finally:
         cursor.close()
         conn.close()
 
-    # Clear user data and end the conversation
-    context.user_data.clear()
-    return ConversationHandler.END
-#
+    game_info = (
+        f"Game at {game['venue']} on {game['event_date']} "
+        f"from {game['start_time']} to {game['end_time']}\n"
+        f"For: {game['capacity']} players\n"
+        f"Registered Players: {main_count} ({waiting_count} in waiting list)\n"
+    )
+    
+    keyboard = [
+        ['Edit Game', 'Cancel Game', 'Announce Game'],
+        ['Register Player', 'Unregister Player'],
+        ['Back to Admin Menu']
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    await query.message.reply_text(game_info, reply_markup=reply_markup)
+    logger.info(f"Final user context show_game_details: {context.user_data}")
+
+    return States.GAME_ACTIONS    
+
+async def show_game_details_by_game_id(game_id, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("show_game_details_by_game_id function called")
+    # Fetch details by game_id directly without relying on update.callback_query
+    # Reuse the database retrieval logic, create an appropriate message, and send it
+    try:
+        conn = connect_db()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("""
+            SELECT event_date, start_time, end_time, venue, capacity, announced
+            FROM schedule
+            WHERE id = %s
+        """, (game_id,))
+        game = cursor.fetchone()
+    finally:
+        cursor.close()
+        conn.close()
+
+    if not game:
+        await context.bot.send_message(
+            chat_id=DEDICATED_CHAT_ID,
+            text="Game not found.",
+        )
+        return
+
+    game_info = (
+        f"Game at {game['venue']} on {game['event_date']} "
+        f"from {game['start_time']} to {game['end_time']}\n"
+        f"For: {game['capacity']} players\n"
+    )
+    keyboard = [
+        ['Edit Game', 'Cancel Game', 'Announce Game'],
+        ['Register Player', 'Unregister Player'],
+        ['Back to Admin Menu']
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    await context.bot.send_message(chat_id=DEDICATED_CHAT_ID, text=game_info, reply_markup=reply_markup)
+    return States.GAME_ACTIONS
+    
+async def start_register_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("start_register_player called")
+    await update.message.reply_text("Please enter the Telegram nickname of the player to register:")
+    return States.REGISTER_PLAYER
+    
+async def handle_register_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("handle_register_player called")
+    game_id = context.user_data.get('selected_game_id')
+    nickname = update.message.text.strip()
+
+    if not nickname:
+        await update.message.reply_text("Nickname cannot be empty. Please try again.")
+        return States.REGISTER_PLAYER
+        
+#    # Validate nickname: allow only alphanumeric characters and underscores
+#    if not re.match(r'^\w+$', nickname):
+#        await update.message.reply_text("Invalid nickname. Please use only letters, numbers, and underscores.")
+#        return States.REGISTER_PLAYER        
+        
+    # Fetch player ID from the database using the username
+    conn = connect_db()
+    cursor = conn.cursor(dictionary=True)
+
+    
+    try:
+        cursor.execute("SELECT id FROM players WHERE nickname = %s", (nickname,))
+        result = cursor.fetchone()   
+        
+        if not result:
+            await update.message.reply_text("Player not found. Please try again.")
+            return States.REGISTER_PLAYER
+
+        player_id = result['id']
+        
+        # Check if the user is already registered for this game
+        cursor.execute("SELECT * FROM registrations WHERE game_id = %s AND player_id = %s", (game_id, player_id))
+        existing_registration = cursor.fetchone()
+        if existing_registration:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Player is already registered for this game."
+            )
+            await show_game_details_by_game_id(game_id, context)  
+            return States.REGISTER_PLAYER
+            
+        # Check the current number of non-waiting registrations
+        cursor.execute("SELECT COUNT(*) AS count FROM registrations WHERE game_id = %s AND waiting = FALSE", (game_id,))
+        current_count = cursor.fetchone()['count']
+
+        # Get the game's capacity
+        cursor.execute("SELECT capacity FROM schedule WHERE id = %s", (game_id,))
+        game = cursor.fetchone()
+        if not game:
+            await update.message.reply_text("Game not found.")
+            return States.GAME_ACTIONS
+            
+        capacity = game['capacity']
+
+        if current_count < capacity:
+            # Register the player normally
+            cursor.execute("INSERT INTO registrations (player_id, game_id, is_confirmed, waiting) VALUES (%s, %s, %s, %s)",
+                       (player_id, game_id, False, False))
+            conn.commit()
+            await update.message.reply_text("Player has been registered for the game. He shall confirm his registration by himself.")
+        else:
+            # Add the player to the waiting list
+            cursor.execute("INSERT INTO registrations (player_id, game_id, is_confirmed, waiting) VALUES (%s, %s, %s, %s)",
+                       (player_id, game_id, False, True))
+            conn.commit()
+            await update.message.reply_text("The game is currently full. Player has been added to the waiting list.")
+    
+        # Send the game status update
+        await send_game_status_update(game_id, context)
+        
+    except Exception as e:
+        logger.exception("Error in register_for_game")
+        await update.message.reply_text("An error occurred while fetching games. Please try again later.")
+        
+    finally:
+        cursor.close()
+        conn.close()
+        
+    # Send the GAME_ACTIONS menu again    
+    await show_game_details_by_game_id(game_id, context)
+    await manage_games_menu(update, context)
+    return States.GAME_ACTIONS
+
+async def start_remove_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("start_remove_player called")
+    await update.message.reply_text("Please enter the username of the player to remove:")
+    return States.REMOVE_PLAYER
+    
+async def start_remove_player_from_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("start_remove_player called")
+    
+    # Fetch registered players for the selected game
+    game_id = context.user_data.get('selected_game_id')
+    if not game_id:
+        await update.message.reply_text("No game selected. Please select a game first.")
+        return States.GAME_ACTIONS
+    
+    try:
+        conn = connect_db()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT p.id, p.nickname
+            FROM players p
+            JOIN registrations r ON p.id = r.player_id
+            WHERE r.game_id = %s
+        """, (game_id,))
+        players = cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
+
+    if not players:
+        await update.message.reply_text("No players are registered for this game.")
+        return States.GAME_ACTIONS
+
+    # Create a list of player options
+    keyboard = [[InlineKeyboardButton(f"{player['nickname']}", callback_data=f"game_remove_player_{player['id']}")] for player in players]
+    keyboard.append([InlineKeyboardButton("Cancel", callback_data='cancel')])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text("Select the player to remove:", reply_markup=reply_markup)
+    return States.REMOVE_PLAYER
+
+async def handle_remove_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("handle_remove_player called")
+    game_id = context.user_data.get('selected_game_id')
+    nickname = update.message.text.strip()
+
+    try:
+        # Fetch player ID from the database using the username
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM players WHERE nickname = %s", (nickname,))
+        result = cursor.fetchone()
+        if not result:
+            await update.message.reply_text("Player not found. Please try again.")
+            return States.REMOVE_PLAYER
+
+        player_id = result[0]
+
+        # Remove the player's registration for the game
+        cursor.execute(
+            "DELETE FROM registrations WHERE player_id = %s AND game_id = %s",
+            (player_id, game_id)
+        )        
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+    await update.message.reply_text(f"Player {nickname} has been removed from the game.")
+    return States.GAME_ACTIONS
+
+async def handle_remove_player_from_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("handle_remove_player_from_game called")
+    query = update.callback_query
+    await query.answer()
+
+    # Extract player ID from callback data
+    player_id = int(query.data.split('_')[-1])
+    game_id = context.user_data.get('selected_game_id')
+
+    try:
+        # Remove the player's registration for the game
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM registrations WHERE player_id = %s AND game_id = %s", (player_id, game_id))
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+    await query.edit_message_text(f"Player has been removed from the game.")
+    await show_game_details_by_game_id(game_id, context)
+    return States.GAME_ACTIONS
+    
+async def handle_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Operation canceled. Returning to Admin Menu.")
+    return States.GAME_ACTIONS  # Or the appropriate state
+    
+async def send_game_actions_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sends the GAME_ACTIONS menu to the user."""
+    keyboard = [
+        ['Edit Game', 'Cancel Game', 'Announce Game'],
+        ['Register Player', 'Remove Player'],
+        ['Back to Admin Menu']
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    await update.message.reply_text("Select an action:", reply_markup=reply_markup)
