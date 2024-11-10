@@ -1,0 +1,9 @@
+from enum import Enum
+
+class States(Enum):
+    SELECT_GAME = 0
+    GAME_ACTIONS = 1
+    SELECT_ATTRIBUTE_TO_EDIT = 2
+    EDIT_GAME_ATTRIBUTE_VALUE = 3
+    REGISTER_PLAYER = 4
+    REMOVE_PLAYER = 5
