@@ -101,8 +101,11 @@ async def show_manage_games_menu(update: Update, context: ContextTypes.DEFAULT_T
     logger.info(f"User context show_manage_games_menu after cleaning: {context.user_data}")
     
     if user not in ADMIN_USERNAMES:
-        await update.message.reply_text("You do not have permission to manage games.")
-        return
+        if update.message:
+            await update.message.reply_text("You do not have permission to manage games.")
+        elif update.callback_query:
+            await update.callback_query.answer("You do not have permission to manage games.", show_alert=True)
+        return  # Exit if the user is not an admin
         
     keyboard = [
         [InlineKeyboardButton("\U00002795 Добавить новую игру", callback_data='add_new_game')],
@@ -110,9 +113,16 @@ async def show_manage_games_menu(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton("\U0001F519 Назад в стартовое меню", callback_data='start_menu')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.callback_query.message.reply_text("Меню управления играми:", reply_markup=reply_markup)
+    # Check whether update has a message or a callback query and send accordingly
+    if update.message:
+        await update.message.reply_text("Game Management Menu:", reply_markup=reply_markup)
+    elif update.callback_query:
+        await update.callback_query.edit_message_text("Game Management Menu:", reply_markup=reply_markup)
+    else:
+        logging.error("Neither update.message nor update.callback_query was found.")
+
     logger.info(f"Final user context show_manage_games_menu: {context.user_data}")
-#    return States.SELECT_GAME
+    return States.SELECT_GAME
     
 
 #manage_players_menu function

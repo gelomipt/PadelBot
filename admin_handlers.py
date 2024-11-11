@@ -20,7 +20,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from menu_handlers import show_admin_menu
+from menu_handlers import show_admin_menu, show_manage_games_menu
 from database import connect_db, get_player_by_nickname, update_game_attribute
 from config import ADMIN_USERNAMES, DEDICATED_CHAT_ID
 from enum import IntEnum
@@ -41,15 +41,7 @@ ADD_GAME_CAPACITY = 5
 #SELECT_GAME, GAME_ACTIONS, SELECT_ATTRIBUTE_TO_EDIT, EDIT_GAME_ATTRIBUTE_VALUE, REGISTER_PLAYER, REMOVE_PLAYER = range(6)
 
 async def add_new_game_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info(f"Called {add_new_game_start.__name__} with context: {context}")
-    
-#    user = update.effective_user.username
-#    if user not in ADMIN_USERNAMES:
-#        await update.message.reply_text("You do not have permission to add games.")
-#        return ConversationHandler.END
-#    query = update.callback_query
-#    await query.answer()  # Acknowledge the callback
-    logger.info(f"add_new_game_start function called")
+    logging.info("Starting new game creation")
     query = update.callback_query
     await query.answer()
     user = query.from_user.username
@@ -57,9 +49,80 @@ async def add_new_game_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if user not in ADMIN_USERNAMES:
         await query.edit_message_text("You do not have permission to add games.")
         return ConversationHandler.END
-        
-    await query.edit_message_text("Please enter the date of the game (YYYY-MM-DD):")
+    
+    context.user_data['game_creation_step'] = ADD_GAME_DATE  # Start from the date step
+    await update.callback_query.message.reply_text("Enter the game date (YYYY-MM-DD):")
     return ADD_GAME_DATE
+
+async def add_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Determine which step the user is currently on based on context
+    step = context.user_data.get("game_creation_step", ADD_GAME_DATE)
+
+    # Process input for each step and move to the next
+    if step == ADD_GAME_DATE:
+        context.user_data["event_date"] = update.message.text  # Capture date input
+        context.user_data["game_creation_step"] = ADD_GAME_START_TIME
+        await update.message.reply_text("Enter the start time (HH:MM):")
+    
+    elif step == ADD_GAME_START_TIME:
+        context.user_data["start_time"] = update.message.text  # Capture start time
+        context.user_data["game_creation_step"] = ADD_GAME_END_TIME
+        await update.message.reply_text("Enter the end time (HH:MM):")
+
+    elif step == ADD_GAME_END_TIME:
+        context.user_data["end_time"] = update.message.text  # Capture end time
+        context.user_data["game_creation_step"] = ADD_GAME_VENUE
+        await update.message.reply_text("Enter the venue:")
+
+    elif step == ADD_GAME_VENUE:
+        context.user_data["venue"] = update.message.text  # Capture venue
+        context.user_data["game_creation_step"] = ADD_GAME_CAPACITY
+        await update.message.reply_text("Enter the capacity:")
+
+    elif step == ADD_GAME_CAPACITY:
+        # Capture capacity and attempt to save the game to the database
+        try:
+            capacity = int(update.message.text)
+            context.user_data["capacity"] = capacity
+            
+            # Gather all inputs
+            event_date = context.user_data["event_date"]
+            start_time = context.user_data["start_time"]
+            end_time = context.user_data["end_time"]
+            venue = context.user_data["venue"]
+
+            # Insert the game into the database
+            conn = connect_db()
+            cursor = conn.cursor()
+            cursor.execute(
+                '''INSERT INTO schedule (event_date, start_time, end_time, venue, capacity)
+                   VALUES (%s, %s, %s, %s, %s)''',
+                (event_date, start_time, end_time, venue, capacity)
+            )
+            conn.commit()
+            await update.message.reply_text("New game has been added successfully.")
+        
+        except ValueError:
+            await update.message.reply_text("Invalid capacity. Please enter a number.")
+            return ADD_GAME_CAPACITY  # Prompt for capacity again
+        
+        except Exception as e:
+            logging.error(f"Error adding game: {e}")
+            await update.message.reply_text("An error occurred while adding the game. Please try again.")
+        
+        finally:
+            cursor.close()
+            conn.close()
+
+        # Clear user data after game is added
+        context.user_data.clear()
+        await show_manage_games_menu(update, context) # Return to Game Management menu state
+        return States.SELECT_GAME
+
+    else:
+        await update.message.reply_text("Unexpected state. Restarting game creation.")
+        context.user_data.clear()
+        return ConversationHandler.END
 
 async def add_game_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info(f"Called {add_game_date.__name__} with context: {context}")
@@ -159,7 +222,7 @@ async def add_game_capacity(update: Update, context: ContextTypes.DEFAULT_TYPE):
             VALUES (%s, %s, %s, %s, %s)
         ''', (event_date, start_time, end_time, venue, capacity))
         conn.commit()
-        await update.message.reply_text("The new game has been added successfully.")
+        await update.callback_query.message("The new game has been added successfully.")
         await show_admin_menu(update, context)
 
     except Exception as e:

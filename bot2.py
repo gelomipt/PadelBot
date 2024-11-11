@@ -27,6 +27,8 @@ from telegram.ext import (
 from admin_handlers import (
 #    add_player_start,
     add_new_game_start,
+    add_new_game_start,
+    add_game,
     add_game_date,
     add_game_start_time,
     add_game_end_time,
@@ -40,15 +42,15 @@ from admin_handlers import (
     ADD_GAME_CAPACITY,
 #    edit_existing_game,
 #    edit_player_start,
-#    edit_game_finish,    
+    edit_game_finish,    
 #    handle_add_player,
     handle_cancel_callback,
-#    handle_edit_attribute_callback,    
+    handle_edit_attribute_callback,    
 #    handle_edit_player_callback, 
 #    handle_edit_player_attribute_callback,
     handle_edit_game_callback,
 #    handle_game_creation,
-#    handle_new_attribute_value,
+    handle_new_attribute_value,
 #    handle_new_player_attribute_value,
 #    handle_register_player,
 #    handle_remove_confirmation_callback,
@@ -128,11 +130,11 @@ async def shutdown(application):
 add_new_game_handler = ConversationHandler(
     entry_points=[CallbackQueryHandler(add_new_game_start, pattern='^add_new_game$')],
     states={
-        ADD_GAME_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_game_date)],
-        ADD_GAME_START_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_game_start_time)],
-        ADD_GAME_END_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_game_end_time)],
-        ADD_GAME_VENUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_game_venue)],
-        ADD_GAME_CAPACITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_game_capacity)],
+        ADD_GAME_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_game)],
+        ADD_GAME_START_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_game)],
+        ADD_GAME_END_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_game)],
+        ADD_GAME_VENUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_game)],
+        ADD_GAME_CAPACITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_game)],
     },
     fallbacks=[CommandHandler('cancel', add_game_cancel)],
 #        per_message=True  # Ensure this is set
@@ -146,7 +148,8 @@ manage_games_handler = ConversationHandler(
     states={
         States.SELECT_GAME: [
             CallbackQueryHandler(show_game_details, pattern=r"^game_for_edit_select_\d+$"),
-            CallbackQueryHandler(manage_games_menu, pattern='^go_back$')            
+            CallbackQueryHandler(manage_games_menu, pattern='^go_back$'),     
+            CallbackQueryHandler(show_manage_games_menu, pattern='^manage_games$')       
         ],       
         States.GAME_ACTIONS: [
             CallbackQueryHandler(handle_edit_game_callback, pattern=r"^edit_game_\d+$"),
@@ -158,14 +161,14 @@ manage_games_handler = ConversationHandler(
             CallbackQueryHandler(handle_cancel_callback, pattern='^cancel$'),
 #            CallbackQueryHandler(handle_unhandled_callback, pattern='.*')  # Catch-all
         ],
-#        States.SELECT_ATTRIBUTE_TO_EDIT: [
-#            CallbackQueryHandler(handle_edit_attribute_callback, pattern='^edit_attr_\\w+$'),
-#            CallbackQueryHandler(show_admin_menu, pattern='^cancel$')
-#        ],
-#        States.EDIT_GAME_ATTRIBUTE_VALUE: [
-#            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_new_attribute_value)
-#            CallbackQueryHandler(edit_game_finish, pattern='^edit_attr_finish$'),
-#        ],
+        States.SELECT_ATTRIBUTE_TO_EDIT: [
+            CallbackQueryHandler(handle_edit_attribute_callback, pattern=r'^edit_attr_\w+$'),
+            CallbackQueryHandler(show_admin_menu, pattern='^cancel$')
+        ],
+        States.EDIT_GAME_ATTRIBUTE_VALUE: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_new_attribute_value),
+            CallbackQueryHandler(edit_game_finish, pattern='^edit_attr_finish$')
+        ],
 #        States.REGISTER_PLAYER: [
 #            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_register_player),
 #            CommandHandler('cancel', show_admin_menu)
