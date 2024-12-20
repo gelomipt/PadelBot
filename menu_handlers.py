@@ -1,4 +1,5 @@
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton 
+from telegram.error import BadRequest
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters, ConversationHandler
 from config import ADMIN_USERNAMES
 from constants import States
@@ -15,15 +16,24 @@ logger = logging.getLogger(__name__)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info(f"Called {start.__name__} with context: {context}")
     
-    user = update.message.from_user.username
+    # Extract user information in a context-agnostic way
+    user = update.effective_user.username
     context.user_data['user_id'] = user
+    logger.info(f"Initial user context: {context.user_data}")
+
+    # Determine if we're handling a callback query or a direct message
+    if update.callback_query:
+        await update.callback_query.answer()
+        message = update.callback_query.message
+    else:
+        message = update.message
     
         # Check if the command is from a private chat
-    if update.message.chat.type == "private":
-        await update.message.reply_text("Welcome! You're now chatting with the bot in a private conversation.")
+    if message.chat.type == "private":
+        await message.reply_text("Добро пожаловать в Падел Бот!")
     else:
         # Ignore the command in public or group chats
-        await update.message.reply_text("The /start command can only be used in private chats with the bot.")
+        await message.reply_text("The /start command can only be used in private chats with the bot.")
         return ConversationHandler.END
     logger.info(f"Initial user context: {context.user_data}")
     
@@ -34,7 +44,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("\U0001F3BE Продолжить как Игрок", callback_data='enter_player')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("Падел Бот приветствует тебя. Выбирай маршрут:", reply_markup=reply_markup)
+        await message.reply_text("Падел Бот приветствует тебя. Выбирай маршрут:", reply_markup=reply_markup)
     else:
         await show_player_menu(update, context)
 
@@ -66,9 +76,17 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
 # show_admin_menu function
 async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info(f"Called {show_admin_menu.__name__} with context: {context}")
+    if update.effective_chat.type != 'private':
+        logger.info("Ignoring message in group chat.")
+        return
+    logger.info(f"Called {show_admin_menu.__name__} with context: {context}")
     logger.info("show_admin_menu function called")
+    context.user_data.clear()
+
     logger.info(f"User context starting Admin menu: {context.user_data}")
+
+    # Determine if using message or callback
+    message = update.message if update.message else update.callback_query.message
 
     keyboard = [
         [InlineKeyboardButton("\U0001F4C5 Управление играми", callback_data='manage_games')],
@@ -77,16 +95,26 @@ async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
  
-    await update.callback_query.message.reply_text("\U00002699 Возможности администрирования:", reply_markup=reply_markup)
-
+    # Determine the appropriate response method based on the update type
+    logger.info("Determining the appropriate response method based on the update type")
+    try:
+        # Check for a callback query and use `edit_message_text` only if content differs
+        if update.callback_query and (message.text != "\U00002699 Меню администратора:" or message.reply_markup != reply_markup):
+            await update.callback_query.edit_message_text("\U00002699 Меню администратора:", reply_markup=reply_markup)
+        else:
+            await message.reply_text("\U00002699 Меню администратора:", reply_markup=reply_markup)
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            logger.info("No changes in message; skipping edit.")
+        else:
+            logging.error("Neither message nor callback_query found in update for show_admin_menu.")
+            raise
 
 #show manage games menu
 async def show_manage_games_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_type = update.message.chat.type if update.message else update.callback_query.message.chat.type
-
-    if chat_type != 'private':
-        logger.info("Attempt to access manage games menu from non-private chat")
-        return  # Do nothing in group or public chats
+    if update.effective_chat.type != 'private':
+        logger.info("Ignoring message in group chat.")
+        return
     
     logger.info("show_manage_games_menu function called")    
     logging.info(f"Called {show_manage_games_menu.__name__} with context: {context}")
@@ -109,26 +137,31 @@ async def show_manage_games_menu(update: Update, context: ContextTypes.DEFAULT_T
         
     keyboard = [
         [InlineKeyboardButton("\U00002795 Добавить новую игру", callback_data='add_new_game')],
-        [InlineKeyboardButton("\U0000267E Изменить текущую игру", callback_data='edit_game')],
+        [InlineKeyboardButton("\U0000267E Изменить текущую игру", callback_data='manage_game')],
         [InlineKeyboardButton("\U0001F519 Назад в стартовое меню", callback_data='start_menu')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    # Check whether update has a message or a callback query and send accordingly
-    if update.message:
-        await update.message.reply_text("Game Management Menu:", reply_markup=reply_markup)
-    elif update.callback_query:
-        await update.callback_query.edit_message_text("Game Management Menu:", reply_markup=reply_markup)
-    else:
-        logging.error("Neither update.message nor update.callback_query was found.")
 
-    logger.info(f"Final user context show_manage_games_menu: {context.user_data}")
-    return States.SELECT_GAME
+    # Use edit_message_text consistently for callback queries
+    try:
+        # Check for a callback query and update only if content has changed
+        if update.callback_query and (update.callback_query.message.text != "Меню управления играми:" or update.callback_query.message.reply_markup != reply_markup):
+            await update.callback_query.edit_message_text("Меню управления играми:", reply_markup=reply_markup)
+        else:
+            await update.message.reply_text("Меню управления играми:", reply_markup=reply_markup)
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            logger.info("No changes in message; skipping edit.")
+        else:
+            raise
     
 
 #manage_players_menu function
 async def manage_players_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != 'private':
+        logger.info("Ignoring message in group chat.")
+        return
     logging.info(f"Called {manage_players_menu.__name__} with context: {context}")
-
     
     user = update.message.from_user.username
     if user not in ADMIN_USERNAMES:
@@ -144,6 +177,9 @@ async def manage_players_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 #show_player_menu function
 async def show_player_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != 'private':
+        logger.info("Ignoring message in group chat.")
+        return
     logging.info(f"Called {show_player_menu.__name__} with context: {context}")
     
     try:
@@ -183,14 +219,16 @@ async def show_player_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if player:
             # User is registered, show player menu
             logger.info(f"User {user_id} is registered")
+
             keyboard = [
-                ['Register for the Game'],
-                ['Confirm Registration for the Game'],
-                ['View Your Registrations', 'Cancel Your Registrations'],
-                ['Swap Your Confirmed Registration'],
-                ['Back to Main Menu']
+                [InlineKeyboardButton("\U0001F4C5 Зарегистрироваться на игру", callback_data='player_register_for_game')],
+                [InlineKeyboardButton("\U0001F4CB Подтвердить регистрацию", callback_data='confirm_registration')],
+                [InlineKeyboardButton("\U0001F6AB Отменить регистрацию", callback_data='cancel_registration')],
+                [InlineKeyboardButton("\U0001F501 Поменяться регистрацией", callback_data='swap_registration')],
+                [InlineKeyboardButton("\U0001F4C3 Посмотреть свои регистрации", callback_data='view_registrations')],
+#                [InlineKeyboardButton("\U0001F519 Назад в стартовое меню", callback_data='start__player_menu')] #add logic to add this button for admins to be able to come back for admin menu
             ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -202,13 +240,13 @@ async def show_player_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # User is not registered, prompt to register
             logger.info(f"User {user_id} is not registered")
             keyboard = [
-                ['Register Now'],
-                ['Back to Main Menu']
+                [InlineKeyboardButton("\U0001F4DD Зарегистрироваться", callback_data='player_registration')],
+                [InlineKeyboardButton("\U0001F519 Назад в стартовое меню", callback_data='start_menu')],
             ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="You are not registered. Please register to continue:",
+                text="Вы не зарегистрированы. Для работы с ботом необходимо зарегистрироваться:",
                 reply_markup=reply_markup
             )
             logger.info("Sent registration prompt to user")

@@ -12,54 +12,79 @@ REGISTER_NAME, REGISTER_LEVEL = range(2)
 
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['registration_step'] = 'name'
-    await update.message.reply_text("Please enter your full name:")
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text("Ввведите свое имя как оно будет показываться в списках игроков:")
     return REGISTER_NAME
 
 async def handle_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()  # Acknowledge the callback
+        message = query.message
+    elif update.message:
+        message = update.message
+    else:
+        # Unexpected update type
+        return ConversationHandler.END
     step = context.user_data.get('registration_step')
-
     if step == 'name':
-        context.user_data['name'] = update.message.text
-        context.user_data['registration_step'] = 'level'
-        await update.message.reply_text("Enter your level (Novice, D-, D, D+, C-, C, C+):")
-        return REGISTER_LEVEL
+        if update.callback_query:
+            # Set the next step
+            context.user_data['registration_step'] = 'name'
+            await message.reply_text("Пожалуйста, введите ваше имя:")
+            return REGISTER_NAME
+        else:
+            # Store the name provided by the user
+            context.user_data['name'] = message.text.strip()
+            context.user_data['registration_step'] = 'level'
+            await message.reply_text("Ваш уровень игры (Новичок, D-, D, D+, C-, C, C+):")
+            return REGISTER_LEVEL
     elif step == 'level':
         level = update.message.text.strip()
-        valid_levels = ['Novice', 'D-', 'D', 'D+', 'C-', 'C', 'C+']
+        valid_levels = ['Новичок', 'D-', 'D', 'D+', 'C-', 'C', 'C+']
         if level in valid_levels:
             name = context.user_data['name']
             nickname = update.message.from_user.username
             user_id = update.effective_user.id
+            chat_id = update.effective_chat.id  # Get chat ID from context
 
             conn = connect_db()
             cursor = conn.cursor()
             try:
-                cursor.execute('''INSERT INTO players (telegram_id, name, nickname, level)
-                                  VALUES (%s, %s, %s, %s)''',
-                               (user_id, name, nickname, level))
+                cursor.execute('''INSERT INTO players (telegram_id, name, nickname, level, chat_id)
+                                  VALUES (%s, %s, %s, %s, %s)''',
+                               (user_id, name, nickname, level, chat_id))
                 conn.commit()
-                await update.message.reply_text("You have been registered successfully.")
+                await message.reply_text("Вы успешно зарегистрированы.")
                 logger.info("Registration successful.")
                 context.user_data.clear()
             except Exception as e:
                 logger.exception("Error during registration")
-                await update.message.reply_text("An error occurred during registration. Please try again.")
+                await message.reply_text("Ошибка, попробуем еще раз.")
                 return ConversationHandler.END
             finally:
                 cursor.close()
                 conn.close()
 
-            context.user_data.clear()
+#            context.user_data.clear()
             # Proceed to show the player menu
             from menu_handlers import show_player_menu
             await show_player_menu(update, context)
             return ConversationHandler.END
         else:
-            await update.message.reply_text(
-                "Invalid level. Please enter one of the following: Novice, D-, D, D+, C-, C, C+."
+            await message.reply_text(
+                "Неверно указан уровень. Принимаются только такие значения (Новичок, D-, D, D+, C-, C, C+)"
             )
             return REGISTER_LEVEL
     else:
         # If for some reason the step is not set, start over
-        await start_registration(update, context)
+        context.user_data['registration_step'] = 'name'
+        await message.reply_text("Пожалуйста, введите ваше имя:")
         return REGISTER_NAME
+
+async def cancel_registration (update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info(f"Called {cancel_registration.__name__} with context: {context}")
+    await update.message.reply_text("Game addition has been canceled.")
+    context.user_data.clear()
+    return ConversationHandler.END
